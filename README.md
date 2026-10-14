@@ -10,13 +10,14 @@ Open [OUTSIDE](https://outside-teal.vercel.app). The project lives at [github.co
 
 - **Conversational planning:** choose Cowell Beach, Santa Cruz Main Beach, or Sunset State Beach; compare available forecasts; preserve your destination, budget, and explicitly owned gear.
 - **A map with evidence:** MapLibre, OpenFreeMap, approximate beach pins, public USGS snapshots, forecast cards, source links, and source timestamps.
+- **A real voice conversation:** record a short request or upload a voice note; MAI-Transcribe-2 transcribes it, GPT-6 Luna plans it, and MAI-Voice-2.1-Flash can read the reply aloud. Both audio model calls appear in the inspector.
 - **Two visual inputs:** ask a vision model to describe the selected camera frame, or show a jacket, backpack, or water bottle to avoid shopping for a duplicate. Ownership requires confirmation; manual selection is also available.
 - **Real products:** Shop by Shopify's public MCP catalog supplies product images, merchants, prices, stock, and variants. Requests can filter by budget, blue color, and lower price tier.
 - **A structured gear check:** Jev evaluates the catalog-described purpose of each candidate for a coastal walk through AI Gateway's Decision API. The server refetches exact variants, and code enforces stock, budget, and owned-gear rules. Unavailable inference is labeled as basic checks.
 - **A complete test checkout:** selected variants and stock are fetched again, the USD budget is checked in integer cents, and the app issues a local test receipt. No payment is collected and no merchant order or cart is created.
 - **A saved escape:** destination, budget, owned categories, and bag are stored in this browser's local storage and can be restored from **My escapes**.
 - **Provider resilience:** Vercel AI Gateway is preferred; alternate models and optional direct Gemini requests provide fallback. Replies show the actual model and elapsed time. A local planner remains available when model requests fail.
-- **Inspectable AI calls:** **AI calls** opens the current browser session's request/response history, with provider, model, status, latency, and available token usage. Planner, visual analysis, Jev decisions, provider failures, and local fallback events are visible. Credentials and image payload bytes are redacted; traces are bounded and are not saved with the trip.
+- **Inspectable AI calls:** **AI calls** opens the current browser session's request/response history, with provider, model, status, latency, and available token usage. Planner, visual analysis, Jev decisions, transcription, spoken replies, provider failures, and local fallback events are visible. Credentials, image payload bytes, and audio bytes are redacted; traces are bounded and are not saved with the trip.
 
 ## Run locally
 
@@ -41,6 +42,8 @@ Open [localhost:3000](http://localhost:3000). Add an AI credential to `.env.loca
 | `OUTSIDE_VISION_MODEL` | Camera and gear vision model; default `google/gemini-4-argon`. |
 | `OUTSIDE_PLANNER_FALLBACK_MODEL` | Planning alternate; default `google/gemini-4-argon`. |
 | `OUTSIDE_VISION_FALLBACK_MODEL` | Vision alternate; default `openai/gpt-6-luna`. |
+| `OUTSIDE_TRANSCRIPTION_MODEL` | Spoken input; default `microsoft/mai-transcribe-2`. |
+| `OUTSIDE_SPEECH_MODEL` | Spoken replies; default `microsoft/mai-voice-2.1-flash`. |
 | `OUTSIDE_GEMINI_MODEL` | Optional direct Gemini model; default `gemini-4-argon`. |
 
 The current model lineup and source verification are documented in [docs/models.md](docs/models.md). Model names can be changed to models available to your provider account. Keys stay in server environment variables. Without a working model credential, conversation uses the labeled local planner and image analysis reports that it is unavailable. Manual owned-gear selection still works.
@@ -53,7 +56,7 @@ npm test
 npm run build
 ```
 
-`npm test` runs Node's TypeScript test runner against input validation, provider fallback, ownership state, image validation, live-catalog response parsing, variant selection, Jev decision parsing, and checkout budget checks. The tests use controlled provider responses; they do not establish deployment health or merchant availability.
+`npm test` runs Node's TypeScript test runner against input validation, provider fallback, ownership state, image and audio validation, live-catalog response parsing, variant selection, Jev decision parsing, and checkout budget checks. The tests use controlled provider responses; they do not establish deployment health or merchant availability.
 
 ## Architecture
 
@@ -63,6 +66,8 @@ The app is a Next.js App Router application with React, TypeScript, MapLibre GL,
 | --- | --- |
 | `GET /api/conditions` | Fetch and cache USGS camera metadata, NWS hourly forecasts, astronomical times, and active weather alerts. Optional `ids=cowells,main-beach,sunset` limits the destinations. |
 | `POST /api/agent` | Fetch server-side conditions, resolve explicit trip facts, compare forecast preferences, and request a structured planner reply. |
+| `POST /api/transcribe` | Validate an audio clip up to 3 MB / 30 seconds, then transcribe through Gateway. Browser recordings are converted to 16 kHz mono PCM WAV first. |
+| `POST /api/speech` | Generate playable speech for up to 1,500 characters through Gateway. |
 | `POST /api/vision` | Analyze an approved USGS image or a validated JPG, PNG, or WebP upload up to 3 MB. |
 | `GET /api/shop` | Query the fixed Shop MCP catalog endpoint with category, price, color, and availability filters. |
 | `POST /api/evaluate` | Refetch selected catalog references and conditions, then ask Jev bounded suitability questions. Return actual model/probability metadata or labeled basic rules. |
@@ -71,7 +76,7 @@ The app is a Next.js App Router application with React, TypeScript, MapLibre GL,
 
 `src/lib/conditions.ts` keeps forecast guidance separate from camera metadata. `src/lib/agent.ts` handles provider calls, bounded input, structured responses, and a local state-preserving planner. `src/lib/shop.ts` handles Shop MCP responses and monetary calculations. Client state lives in `src/components/outside-app.tsx`; the interactive map lives in `src/components/coastal-map.tsx`.
 
-Conversation and vision use Gateway's OpenAI-compatible chat completions endpoint. Direct Gemini is optional. Each model attempt has a timeout; at most three configured attempts are made. **Preferences → Try provider fallback** skips the primary attempt and makes a real alternate request. Browser voice input uses the Web Speech recognition API, and optional spoken replies use `speechSynthesis`; Whisper and Gateway transcription are not configured.
+Conversation and vision use Gateway's OpenAI-compatible chat completions endpoint. Direct Gemini is optional. Each model attempt has a timeout; at most three configured attempts are made. **Preferences → Try provider fallback** skips the primary attempt and makes a real alternate request. Spoken requests use `microsoft/mai-transcribe-2` through Gateway's transcription endpoint; replies use `microsoft/mai-voice-2.1-flash` through its speech endpoint. Recording starts only after a click, stops after 20 seconds, and releases microphone tracks on stop or cancellation. **Preferences → Upload audio** accepts a voice note; **Hear this plan** requests a spoken reply. Audio is held in memory and omitted from saved trips and debug payloads.
 
 Jev uses the [Gateway Decision HTTP API](https://vercel.com/docs/ai-gateway/modalities/decision#http-api) at `POST /v1/evaluate` with model `typesafe-ai/jev` and the existing Gateway credential. No separate TypeSafe account or key is required for this route. Each product gets a Boolean probability about its catalog-described purpose; a value of at least 0.7 supports a fit label, with code guards for price, stock, and ownership. Jev is text-based: the separate vision model reads images. This is a product-purpose assessment, not an independent test of gear performance. If the decision call fails, the app returns `engine: rules`, null probabilities, and an explicit basic-checks explanation.
 

@@ -7,6 +7,8 @@ export const DEFAULT_MODELS = Object.freeze({
   plannerFallback: 'google/gemini-4-argon',
   visionFallback: 'openai/gpt-6-luna',
   directGemini: 'gemini-4-argon',
+  transcription: 'microsoft/mai-transcribe-2',
+  speech: 'microsoft/mai-voice-2.1-flash',
 });
 
 export function roleModels() {
@@ -20,6 +22,13 @@ export function roleModels() {
       fallback: process.env.OUTSIDE_VISION_FALLBACK_MODEL?.trim() || DEFAULT_MODELS.visionFallback,
     },
     directGemini: process.env.OUTSIDE_GEMINI_MODEL?.trim() || DEFAULT_MODELS.directGemini,
+  };
+}
+
+export function voiceModels() {
+  return {
+    transcription: process.env.OUTSIDE_TRANSCRIPTION_MODEL?.trim() || DEFAULT_MODELS.transcription,
+    speech: process.env.OUTSIDE_SPEECH_MODEL?.trim() || DEFAULT_MODELS.speech,
   };
 }
 

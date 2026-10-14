@@ -37,8 +37,13 @@ function imagePlaceholder(mime: string, base64: string) {
   return `[${mime} image: ${Buffer.byteLength(base64.replace(/\s/g, ''), 'base64')} bytes]`;
 }
 
+function audioPlaceholder(mime: string, base64: string) {
+  return `[${mime} audio: ${Buffer.byteLength(base64.replace(/\s/g, ''), 'base64')} bytes]`;
+}
+
 function cleanString(value: string, privateValues: string[]) {
   let result = value.replace(/data:(image\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)/g, (_whole, mime: string, data: string) => imagePlaceholder(mime, data));
+  result = result.replace(/data:(audio\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)/g, (_whole, mime: string, data: string) => audioPlaceholder(mime, data));
   for (const secret of privateValues) {
     if (result.includes(secret)) result = result.replaceAll(secret, '[REDACTED]');
   }
@@ -68,11 +73,15 @@ export function sanitizeTraceValue(value: unknown): unknown {
         return result;
       }
       const record = item as Record<string, unknown>;
-      const mime = typeof record.mimeType === 'string' ? record.mimeType : typeof record.mime_type === 'string' ? record.mime_type : '';
+      const mime = typeof record.mimeType === 'string' ? record.mimeType : typeof record.mime_type === 'string' ? record.mime_type : typeof record.mediaType === 'string' ? record.mediaType : '';
       const result: Record<string, unknown> = {};
       for (const [key, raw] of Object.entries(record).slice(0, 128)) {
         if (PRIVATE_KEY.test(key)) { result[key] = '[REDACTED]'; continue; }
         if (key === 'reasoning_content' || (record.thought === true && key === 'text')) { result[key] = '[provider reasoning omitted]'; continue; }
+        if ((key === 'audio' || key === 'data' && mime.startsWith('audio/') || /^(?:audio_base64|audioBase64)$/i.test(key)) && typeof raw === 'string') {
+          result[key] = audioPlaceholder(mime.startsWith('audio/') ? mime : 'audio/unknown', raw);
+          continue;
+        }
         if ((key === 'data' && mime.startsWith('image/') || /^(?:b64_json|image_base64|base64)$/i.test(key)) && typeof raw === 'string') {
           result[key] = imagePlaceholder(mime || 'image', raw);
           continue;

@@ -10,6 +10,23 @@ import { inspectImage, parseAgentInput, parseVisionInput, planTrip } from '../sr
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=';
 const PRIVATE_ENV = ['AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'OUTSIDE_PLANNER_MODEL', 'OUTSIDE_PLANNER_FALLBACK_MODEL', 'OUTSIDE_VISION_MODEL', 'OUTSIDE_VISION_FALLBACK_MODEL', 'OUTSIDE_GEMINI_MODEL'] as const;
 
+test('audio traces redact request, response, inline data, and data URI audio with MIME and byte counts', () => {
+  const audio = Buffer.from('private audio bytes').toString('base64');
+  const safe = sanitizeTraceValue({
+    request: { audio, mediaType: 'audio/wav' },
+    response: { audio, mediaType: 'audio/mpeg', warnings: [] },
+    inlineData: { mimeType: 'audio/ogg', data: audio },
+    embedded: `data:audio/flac;base64,${audio}`,
+  });
+  assert.deepEqual(safe, {
+    request: { audio: '[audio/wav audio: 19 bytes]', mediaType: 'audio/wav' },
+    response: { audio: '[audio/mpeg audio: 19 bytes]', mediaType: 'audio/mpeg', warnings: [] },
+    inlineData: { mimeType: 'audio/ogg', data: '[audio/ogg audio: 19 bytes]' },
+    embedded: '[audio/flac audio: 19 bytes]',
+  });
+  assert.doesNotMatch(JSON.stringify(safe), new RegExp(audio));
+});
+
 test('trace scopes keep concurrent callers separate and discard events outside a request', async () => {
   recordTrace({ provider: 'local', model: 'outside-scope', operation: 'test', status: 'local', request: {}, response: {}, durationMs: 0 });
   const results = await Promise.all(['first', 'second'].map(async name => withTrace(async () => {

@@ -46,7 +46,7 @@ export interface PlanningContext {
     };
     alerts?: { event: string; headline: string; severity: string; expires: string | null }[];
     alertsStatus?: "available" | "stale" | "unavailable";
-    visualEvidence?: { description: string; model: string; imageUrl: string; capturedAt?: string | null };
+    visualEvidence?: { description: string; model: string; imageUrl: string; capturedAt?: string | null; analyzedAt?: string };
   }[];
 }
 
@@ -86,7 +86,12 @@ const ACTIONS: AgentAction[] = ["compare", "camera", "gear", "cheaper", "scan"];
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const MAX_MODEL_RESPONSE_BYTES = 100_000;
 const MODEL_TIMEOUT_MS = 14_000;
-const observationCache = new Map<string, { result: VisionResult; expiresAt: number }>();
+const OBSERVATION_TTL_MS = 15 * 60_000;
+type CachedObservation = { result: VisionResult; expiresAt: number; analyzedAt: string };
+export type CameraObservation = { description: string; model: string; imageUrl: string; capturedAt: null; analyzedAt: string };
+const observationCache = new Map<string, CachedObservation>();
+const observationUrls = new Map<string, { cacheKey: string; fingerprint: string; expiresAt: number }>();
+let observationFingerprint = "";
 
 /** Exact public camera service hosts. Never fetch arbitrary user URLs. */
 const CAMERA_HOST = "cmgp-coastcam.s3-us-west-2.amazonaws.com";
@@ -95,6 +100,55 @@ const CAMERA_PATHS = new Set([
   "/cameras/dreaminn/latest/c2_snap.jpg",
   "/cameras/sunset/latest/c2_snap.jpg",
 ]);
+
+function currentVisionFingerprint() {
+  const models = roleModels();
+  const fingerprint = JSON.stringify({ vision: models.vision, directGemini: models.directGemini });
+  if (fingerprint !== observationFingerprint) {
+    observationCache.clear();
+    observationUrls.clear();
+    observationFingerprint = fingerprint;
+  }
+  return fingerprint;
+}
+
+function publicObservationUrl(imageUrl: string) {
+  if (imageUrl.startsWith("data:")) return undefined;
+  try {
+    validateImageReference(imageUrl);
+    const url = new URL(imageUrl);
+    // Reuse requires the exact source-file version from the conditions service.
+    if (!url.searchParams.get("v")) return undefined;
+    return url.toString();
+  } catch { return undefined; }
+}
+
+function indexObservation(imageUrl: string, cacheKey: string, cached: CachedObservation, fingerprint: string) {
+  const url = publicObservationUrl(imageUrl);
+  if (!url || fingerprint !== currentVisionFingerprint()) return;
+  if (observationUrls.size >= 32 && !observationUrls.has(url)) observationUrls.delete(observationUrls.keys().next().value!);
+  observationUrls.set(url, { cacheKey, fingerprint, expiresAt: cached.expiresAt });
+}
+
+/** Reads previously analyzed public evidence; never fetches an image or invokes a model. */
+export function getCameraObservation(imageUrl: string): CameraObservation | undefined {
+  const url = publicObservationUrl(imageUrl);
+  if (!url) return undefined;
+  const fingerprint = currentVisionFingerprint();
+  const indexed = observationUrls.get(url);
+  if (!indexed || indexed.fingerprint !== fingerprint || indexed.expiresAt <= Date.now()) {
+    observationUrls.delete(url);
+    return undefined;
+  }
+  const cached = observationCache.get(indexed.cacheKey);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    observationUrls.delete(url);
+    return undefined;
+  }
+  const result: CameraObservation = { description: cached.result.description, model: cached.result.model, imageUrl: url, capturedAt: null, analyzedAt: cached.analyzedAt };
+  recordTrace({ provider: cached.result.engine, model: result.model, operation: "vision.context", status: "cached", request: { imageUrl: url }, response: result, durationMs: 0 });
+  return result;
+}
 
 export class InputError extends Error {
   readonly status: number;
@@ -531,12 +585,14 @@ For conditions: category must be null; describe only visible beach/sky/surf/sand
 
 export async function inspectImage(input: VisionInput): Promise<VisionResult> {
   const started = Date.now();
+  const fingerprint = currentVisionFingerprint();
   try {
     const image = await imageDataUri(input.image);
     // Only public camera observations are cached; personal gear photos are not retained.
-    const cacheKey = input.kind === "conditions" && !input.image.startsWith("data:") ? createHash("sha256").update(`${JSON.stringify(roleModels())}:${image}`).digest("hex") : undefined;
+    const cacheKey = input.kind === "conditions" && !input.image.startsWith("data:") ? createHash("sha256").update(`${fingerprint}:${image}`).digest("hex") : undefined;
     const cached = cacheKey && !input.forceFallback ? observationCache.get(cacheKey) : undefined;
     if (cached && cached.expiresAt > Date.now()) {
+      indexObservation(input.image, cacheKey!, cached, fingerprint);
       const result = { ...cached.result, latencyMs: Date.now() - started, cached: true };
       recordTrace({ provider: cached.result.engine, model: cached.result.model, operation: `vision.${input.kind}`, status: "cached", request: { image: input.image, kind: input.kind }, response: result, durationMs: Date.now() - started, fallback: result.fallback });
       return result;
@@ -547,9 +603,11 @@ export async function inspectImage(input: VisionInput): Promise<VisionResult> {
     const category = input.kind === "gear" && hasValue(GEAR_CATEGORIES, value.category) ? value.category : null;
     const confidence = typeof value.confidence === "number" && Number.isFinite(value.confidence) ? Math.max(0, Math.min(1, value.confidence)) : 0;
     const result: VisionResult = { description: value.description.trim(), category: category && confidence >= 0.65 ? category : null, confidence: input.kind === "gear" && !category ? 0 : confidence, engine: completion.engine, model: completion.model, latencyMs: Date.now() - started, fallback: completion.fallback, cached: false };
-    if (cacheKey) {
+    if (cacheKey && fingerprint === currentVisionFingerprint()) {
       if (observationCache.size >= 32) observationCache.delete(observationCache.keys().next().value!);
-      observationCache.set(cacheKey, { result, expiresAt: Date.now() + 15 * 60_000 });
+      const cachedObservation = { result, expiresAt: Date.now() + OBSERVATION_TTL_MS, analyzedAt: new Date().toISOString() };
+      observationCache.set(cacheKey, cachedObservation);
+      indexObservation(input.image, cacheKey, cachedObservation, fingerprint);
     }
     return result;
   } catch (error) {

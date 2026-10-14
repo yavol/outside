@@ -1,4 +1,4 @@
-import { InputError, parseAgentInput, planTrip, protectPost, readJson } from "@/lib/agent";
+import { getCameraObservation, InputError, parseAgentInput, planTrip, protectPost, readJson } from "@/lib/agent";
 import { getConditions } from "@/lib/conditions";
 import { destinations } from "@/lib/destinations";
 import { withTrace } from "@/lib/trace";
@@ -16,7 +16,8 @@ export async function POST(request: Request) {
       fetchedAt: conditions.fetchedAt,
       destinations: destinations.map(place => {
         const evidence = conditions.destinations.find(value => value.id === place.id)!;
-        return { id: place.id, name: place.name, description: place.description, tags: place.tags, weather: evidence.weather, camera: evidence.camera, alerts: evidence.alerts, alertsStatus: evidence.alertsStatus };
+        const visualEvidence = evidence.camera.imageUrl ? getCameraObservation(evidence.camera.imageUrl) : undefined;
+        return { id: place.id, name: place.name, description: place.description, tags: place.tags, weather: evidence.weather, camera: evidence.camera, alerts: evidence.alerts, alertsStatus: evidence.alertsStatus, ...(visualEvidence ? { visualEvidence } : {}) };
       }),
     };
     const result = await planTrip(input, context);

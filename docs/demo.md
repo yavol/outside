@@ -2,7 +2,7 @@
 
 **Pitch:** “Tell OUTSIDE what kind of day you want. It brings the coast, the camera evidence, and the gear you are missing into one conversation.”
 
-Use a desktop browser with the app open, working model credentials, and a clear photo of a reusable water bottle ready. Chrome supports the browser voice path; typing gives the same planning flow. Live catalog results and conditions can change, so rehearse with the products returned on demo day.
+Use a desktop browser with the app open, working model credentials, and a clear photo of a reusable water bottle ready. The microphone uses Gateway transcription; typing gives the same planning flow. Enable **Preferences → Read responses aloud** to hear the plan through Gateway speech. Live catalog results and conditions can change, so rehearse with the products returned on demo day.
 
 App: [outside-teal.vercel.app](https://outside-teal.vercel.app).
 
@@ -23,7 +23,7 @@ This is a separate optional moment, since waiting for an unavailable upstream ca
 
 ## Show the AI work
 
-Open **AI calls** in the top bar, or click the gear assessment banner. Inspect the actual request and response for conversation, camera/gear vision, and Jev's Decision API. The panel shows the provider, model, status, elapsed time, and token usage when supplied. A failed primary call and a successful alternate are separate events; basic rules and local planning are labeled locally. Credentials and image bytes are redacted. An uncertain Jev result remains uncertain rather than becoming an invented approval.
+Open **AI calls** in the top bar, or click the gear assessment banner. Inspect the actual request and response for conversation, camera/gear vision, Jev's Decision API, transcription, and spoken replies. The panel shows the provider, model, status, elapsed time, and token usage when supplied. A failed primary call and a successful alternate are separate events; basic rules and local planning are labeled locally. Credentials, image bytes, and audio bytes are redacted. Use the microphone or **Preferences → Upload audio**, analyze a camera frame, build a gear bag, and select **Hear this plan** to show all five models responding in one session. An uncertain Jev result remains uncertain rather than becoming an invented approval.
 
 ## Rehearsal checks
 
@@ -31,7 +31,7 @@ Open **AI calls** in the top bar, or click the gear assessment banner. Inspect t
 2. Read each selected camera's printed timestamp and inspect the NWS forecast period. Describe whatever is present rather than rehearsing a fixed weather claim.
 3. Search for blue gear within the intended budget. Choose a product with an available variant. If no match exists, adjust the request or budget openly; the app does not insert placeholder inventory.
 4. Complete a test receipt and restore a saved escape. Clear a previous saved trip in browser storage if you want the first-run state.
-5. For a camera-based gear scan, allow camera permission on localhost or HTTPS. For voice, allow microphone access; if the browser does not support recognition, type the request.
+5. For a camera-based gear scan, allow camera permission on localhost or HTTPS. For voice, allow microphone access after clicking the mic, then click it again to finish. Recordings stop after 20 seconds. An uploaded voice note under 30 seconds also works.
 
 ## Honest technical answers
 
@@ -43,7 +43,7 @@ Open **AI calls** in the top bar, or click the gear assessment banner. Inspect t
 
 **How does the agent work?** Next.js server routes gather source data and resolve explicit facts. Vercel AI Gateway is the preferred model transport, with configured alternate models and optional direct Gemini fallback. The local planner preserves destination, budget, and ownership when inference is unavailable. Forecast comparisons do not imply weekend weather from a few current forecast hours.
 
-**What about voice and evaluation?** Voice input/output uses browser Web Speech APIs; Whisper/Gateway transcription are not integrated. Jev receives server-refetched product facts and forecast context through Gateway's Decision API, returning typed product-purpose probabilities. Code keeps budget, stock, and ownership checks authoritative. Automated local tests exercise those boundaries and labeled fallback behavior.
+**What about voice and evaluation?** Five models have distinct roles: GPT-6 Luna for planning, Gemini 4 Argon for image observations, Jev for typed product suitability, MAI-Transcribe-2 for spoken requests, and MAI-Voice-2.1-Flash for spoken replies. All use the same Vercel AI Gateway credential. The app sends real audio to the speech endpoints; it does not count browser speech as a model call. Jev receives server-refetched product facts and forecast context through Gateway's Decision API, returning typed product-purpose probabilities. Code keeps budget, stock, and ownership checks authoritative. Automated local tests exercise those boundaries and labeled fallback behavior.
 
 **Is the line a route?** It is a visual coastal guide connecting approximate beach destinations. It does not give road directions or travel-time calculations.
 
