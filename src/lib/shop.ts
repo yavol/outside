@@ -196,8 +196,10 @@ const CATEGORY_QUERIES: Record<GearCategory, string> = {
   bottle: "hiking water bottle",
 };
 export function inferGearCategory(query: string): GearCategory {
+  if (/\b(jacket|raincoat|shell|anorak|poncho|windbreaker)\b/i.test(query)) return "shell";
+  if (/backpack|daypack|rucksack/i.test(query)) return "daypack";
   if (/bottle|water|flask|hydrat/i.test(query) && !/waterproof/i.test(query)) return "bottle";
-  if (/pack|bag|rucksack/i.test(query)) return "daypack";
+  if (/\b(pack|bag)\b/i.test(query)) return "daypack";
   return "shell";
 }
 export type ShopSearchInput = { query?: string; budget?: number; color?: string; cheaper?: boolean; category?: GearCategory; limit?: number };

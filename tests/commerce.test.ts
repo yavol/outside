@@ -4,7 +4,7 @@ import { afterEach, mock, test } from "node:test";
 // A URL keeps Node's native TypeScript extension without requiring the app's
 // bundler-oriented tsconfig to enable allowImportingTsExtensions.
 const shopModule = new URL("../src/lib/shop.ts", import.meta.url);
-const { assertCheckoutBudget, assertCheckoutOrigin, fetchProduct, lookupGear, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
+const { assertCheckoutBudget, assertCheckoutOrigin, fetchProduct, inferGearCategory, lookupGear, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
 
 const PRODUCT_ID = "gid://shopify/p/test-shell";
 const VARIANT_ID = "gid://shopify/ProductVariant/123";
@@ -391,4 +391,11 @@ test("gear evaluation lookup rejects invalid or excessive refs before the remote
     await assert.rejects(() => lookupGear(refs), (error: unknown) => error instanceof ShopError && error.status === 400);
   }
   assert.equal(calls.length, 0);
+});
+
+test("gear purpose distinguishes packaway apparel from waterproof and hydration backpacks", () => {
+  assert.equal(inferGearCategory("Regatta Mens Pack-It III Waterproof Walking Packaway Jacket"), "shell");
+  assert.equal(inferGearCategory("Waterproof Hiking Backpack"), "daypack");
+  assert.equal(inferGearCategory("Hydration Backpack"), "daypack");
+  assert.equal(inferGearCategory("Trail Water Bottle"), "bottle");
 });
