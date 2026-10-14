@@ -274,7 +274,8 @@ export async function searchGear(input: ShopSearchInput = {}): Promise<ShopSearc
   };
 }
 
-export type CheckoutItem = { productId: string; variantId: string; quantity: number };
+export type GearReference = { productId: string; variantId: string };
+export type CheckoutItem = GearReference & { quantity: number };
 export type CheckoutLink = { merchant: string; url: string; kind: "checkout" | "merchant_cart" | "product"; items: { title: string; quantity: number; selectedOptions: ShopOption[] }[]; messages: string[] };
 export type DemoOrderItem = {
   productId: string; variantId: string; title: string; quantity: number;
@@ -318,16 +319,31 @@ export function assertCheckoutBudget(budget: unknown, receipt?: { totalAmount: n
   if (receipt.totalAmount > limitAmount) throw new ShopError("Your refreshed kit is over budget. Remove an item or choose a cheaper option.", 409);
 }
 
+/** Rehydrate existing UI selections from one fresh, read-only catalog lookup.
+ * Availability is returned as reported so callers can evaluate unavailable gear.
+ */
+export async function lookupGear(refs: GearReference[]): Promise<ShopProduct[]> {
+  if (!Array.isArray(refs) || refs.length < 1 || refs.length > 6) throw new ShopError("Select between one and six gear items.", 400);
+  for (const ref of refs) {
+    if (!ref || typeof ref.productId !== "string" || !/^gid:\/\/shopify\/(?:p|Product)\/[a-zA-Z0-9_-]{1,100}$/.test(ref.productId)) throw new ShopError("Invalid product selection.", 400);
+    if (typeof ref.variantId !== "string" || !/^gid:\/\/shopify\/ProductVariant\/[0-9]{1,30}$/.test(ref.variantId)) throw new ShopError("Invalid product option.", 400);
+  }
+  const data = await callShop("lookup_catalog", { catalog: { ids: [...new Set(refs.map((i) => i.variantId))], context: CONTEXT } });
+  const products = array(data.products);
+  return refs.map((ref) => {
+    const raw = products.find((p) => object(p).id === ref.productId && array(object(p).variants).some((v) => object(v).id === ref.variantId));
+    const product = raw ? normalizeProduct(raw, inferGearCategory(str(object(raw).title)), ref.variantId) : null;
+    if (!product) throw new ShopError("One selected item could not be verified. Refresh the gear list and try again.", 409);
+    return product;
+  });
+}
+
 /** Reverify stock and issue a local test receipt. No external cart or payment calls. */
 export async function prepareCheckout(items: CheckoutItem[]): Promise<CheckoutResult> {
-  const data = await callShop("lookup_catalog", { catalog: { ids: items.map((i) => i.variantId), context: CONTEXT } });
-  const products = array(data.products);
-  const verified = items.map((item) => {
-    const raw = products.find((p) => object(p).id === item.productId && array(object(p).variants).some((v) => object(v).id === item.variantId));
-    const product = raw ? normalizeProduct(raw, "shell", item.variantId) : null;
-    if (!product) throw new ShopError("One selected item could not be verified. Refresh the gear list and try again.", 409);
+  const refreshed = await lookupGear(items);
+  const verified = refreshed.map((product, index) => {
     if (product.available !== true) throw new ShopError(`${product.title} is no longer confirmed in stock. Choose another option.`, 409);
-    return { product, quantity: item.quantity };
+    return { product, quantity: items[index].quantity };
   });
   const currencies = new Set(verified.map(({ product }) => product.currency));
   if (currencies.size !== 1) throw new ShopError("Select products in the same currency to prepare your test order.", 409);

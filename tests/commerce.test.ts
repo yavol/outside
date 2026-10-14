@@ -4,7 +4,7 @@ import { afterEach, mock, test } from "node:test";
 // A URL keeps Node's native TypeScript extension without requiring the app's
 // bundler-oriented tsconfig to enable allowImportingTsExtensions.
 const shopModule = new URL("../src/lib/shop.ts", import.meta.url);
-const { assertCheckoutBudget, assertCheckoutOrigin, fetchProduct, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
+const { assertCheckoutBudget, assertCheckoutOrigin, fetchProduct, lookupGear, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
 
 const PRODUCT_ID = "gid://shopify/p/test-shell";
 const VARIANT_ID = "gid://shopify/ProductVariant/123";
@@ -344,4 +344,51 @@ test("checkout still rejects foreign origins, cross-site requests and malformed 
       (error: unknown) => error instanceof ShopError && error.status === 403,
     );
   }
+});
+
+test("gear evaluation lookup batches exact references, preserves order and infers purpose from catalog titles", async () => {
+  const packId = "gid://shopify/p/pack";
+  const packVariant = "gid://shopify/ProductVariant/456";
+  const bottleId = "gid://shopify/p/bottle";
+  const bottleVariant = "gid://shopify/ProductVariant/789";
+  const calls = installCatalog([
+    product(),
+    product({ id: bottleId, title: "Hiking water bottle", variants: [variant({ id: bottleVariant })] }),
+    product({ id: packId, title: "20L hiking daypack", variants: [variant({ id: packVariant })] }),
+  ]);
+  const products = await lookupGear([
+    { productId: packId, variantId: packVariant },
+    { productId: PRODUCT_ID, variantId: VARIANT_ID },
+    { productId: bottleId, variantId: bottleVariant },
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].rpc.params.name, "lookup_catalog");
+  assert.deepEqual(calls[0].rpc.params.arguments.catalog.ids, [packVariant, VARIANT_ID, bottleVariant]);
+  assert.deepEqual(products.map((p) => p.category), ["daypack", "shell", "bottle"]);
+  assert.deepEqual(products.map((p) => p.variantId), [packVariant, VARIANT_ID, bottleVariant]);
+});
+
+test("gear evaluation lookup retains unconfirmed stock while receipt creation rejects it", async () => {
+  installCatalog([product({ variants: [variant({ availability: { available: false } })] })]);
+  const refs = [{ productId: PRODUCT_ID, variantId: VARIANT_ID }];
+  const products = await lookupGear(refs);
+  assert.equal(products[0].available, false);
+  await assert.rejects(
+    () => prepareCheckout([{ ...refs[0], quantity: 1 }]),
+    (error: unknown) => error instanceof ShopError && error.status === 409,
+  );
+});
+
+test("gear evaluation lookup rejects invalid or excessive refs before the remote request", async () => {
+  const calls = installCatalog();
+  const invalid = [
+    [],
+    [{ productId: "https://untrusted.example/product", variantId: VARIANT_ID }],
+    [{ productId: PRODUCT_ID, variantId: "not-a-real-variant" }],
+    Array.from({ length: 7 }, () => ({ productId: PRODUCT_ID, variantId: VARIANT_ID })),
+  ];
+  for (const refs of invalid) {
+    await assert.rejects(() => lookupGear(refs), (error: unknown) => error instanceof ShopError && error.status === 400);
+  }
+  assert.equal(calls.length, 0);
 });
