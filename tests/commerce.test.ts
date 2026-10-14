@@ -4,7 +4,7 @@ import { afterEach, mock, test } from "node:test";
 // A URL keeps Node's native TypeScript extension without requiring the app's
 // bundler-oriented tsconfig to enable allowImportingTsExtensions.
 const shopModule = new URL("../src/lib/shop.ts", import.meta.url);
-const { assertCheckoutBudget, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
+const { assertCheckoutBudget, assertCheckoutOrigin, fetchProduct, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
 
 const PRODUCT_ID = "gid://shopify/p/test-shell";
 const VARIANT_ID = "gid://shopify/ProductVariant/123";
@@ -270,5 +270,78 @@ test("a single category or search keeps the full budget without forcing the low 
     const filters = rpc.params.arguments.catalog.filters as Record<string, unknown>;
     assert.deepEqual(filters.price, { max: 15000 });
     assert.equal(filters.price_tier, undefined);
+  }
+});
+
+test("product details request exact option pairs and preserve full option values with current stock", async () => {
+  const selected = [{ name: "Color", label: "Blue" }, { name: "Size", label: "Medium" }];
+  let request: RpcRequest | undefined;
+  mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    request = JSON.parse(String(init.body)) as RpcRequest;
+    return Response.json({ result: { structuredContent: { product: product({
+      options: [
+        { name: "Color", values: [{ label: "Blue", available: true }, { label: "Olive", available: false }] },
+        { name: "Size", values: [{ label: "Medium", available: true }, { label: "Large", available: true }] },
+      ],
+    }) }, isError: false } });
+  });
+  const result = await fetchProduct(PRODUCT_ID, { category: "daypack", selected });
+  assert.equal(request?.params.name, "get_product");
+  assert.deepEqual(request?.params.arguments.catalog, { id: PRODUCT_ID, context: { address_country: "US", currency: "USD" }, selected });
+  assert.equal(result.product.category, "daypack");
+  assert.equal(result.product.available, true);
+  assert.equal(result.product.priceAmount, 12999);
+  assert.deepEqual(result.product.selectedOptions, selected);
+  assert.equal(result.product.options[0].values[1].available, false);
+  assert.equal(result.products[0], result.product);
+});
+
+test("product details do not silently substitute another size or color", async () => {
+  mock.method(globalThis, "fetch", async () => Response.json({
+    result: { structuredContent: { product: product() }, isError: false },
+  }));
+  await assert.rejects(
+    () => fetchProduct(PRODUCT_ID, { selected: [{ name: "Color", label: "Red" }] }),
+    (error: unknown) => error instanceof ShopError && error.status === 409,
+  );
+});
+
+test("product details reject URLs and malformed option selections before any remote call", async () => {
+  const calls = installCatalog();
+  await assert.rejects(
+    () => fetchProduct("https://untrusted.example/products/shell"),
+    (error: unknown) => error instanceof ShopError && error.status === 400,
+  );
+  await assert.rejects(
+    () => fetchProduct(PRODUCT_ID, { selected: [{ name: "Color", label: "" }] }),
+    (error: unknown) => error instanceof ShopError && error.status === 400,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("checkout recognizes the browser-facing host when Next binds to 0.0.0.0", () => {
+  const request = new Request("http://0.0.0.0:3000/api/checkout", {
+    headers: { host: "localhost:3000", origin: "http://localhost:3000", "sec-fetch-site": "same-origin" },
+  });
+  assert.doesNotThrow(() => assertCheckoutOrigin(request));
+  const proxy = new Request("http://internal:3000/api/checkout", {
+    headers: { host: "outside.vercel.app", origin: "https://outside.vercel.app", "x-forwarded-proto": "https", "sec-fetch-site": "same-origin" },
+  });
+  assert.doesNotThrow(() => assertCheckoutOrigin(proxy));
+});
+
+test("checkout still rejects foreign origins, cross-site requests and malformed origins", () => {
+  const cases: Record<string, string>[] = [
+    { host: "localhost:3000", origin: "https://attacker.example" },
+    { host: "localhost:3000", origin: "http://localhost:3000.attacker.example" },
+    { host: "localhost:3000", origin: "null" },
+    { host: "localhost:3000", origin: "http://localhost:3000", "sec-fetch-site": "cross-site" },
+    { host: "localhost:3000", "sec-fetch-site": "cross-site" },
+  ];
+  for (const headers of cases) {
+    assert.throws(
+      () => assertCheckoutOrigin(new Request("http://0.0.0.0:3000/api/checkout", { headers })),
+      (error: unknown) => error instanceof ShopError && error.status === 403,
+    );
   }
 });

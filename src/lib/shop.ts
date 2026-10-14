@@ -202,6 +202,38 @@ export function inferGearCategory(query: string): GearCategory {
 }
 export type ShopSearchInput = { query?: string; budget?: number; color?: string; cheaper?: boolean; category?: GearCategory; limit?: number };
 
+export type ShopProductResult = {
+  status: "live"; source: "Shop MCP"; sourceUrl: "https://shop.dev";
+  product: ShopProduct; products: ShopProduct[]; messages: string[]; checkedAt: string;
+};
+
+/** Product detail returns full option values; fetch again for each exact combo.
+ * A product's options list does not imply every size/color combination exists.
+ */
+export async function fetchProduct(productId: string, input: { category?: GearCategory; selected?: ShopOption[] } = {}): Promise<ShopProductResult> {
+  if (!/^gid:\/\/shopify\/(?:p|Product)\/[a-zA-Z0-9_-]{1,100}$/.test(productId)) throw new ShopError("Invalid product selection.", 400);
+  const selected = input.selected || [];
+  if (!Array.isArray(selected) || selected.length > 8 || selected.some((o) => !o || typeof o.name !== "string" || typeof o.label !== "string" || !o.name.trim() || !o.label.trim() || o.name.length > 100 || o.label.length > 100 || /[\x00-\x1f]/.test(o.name + o.label))) {
+    throw new ShopError("Choose valid product sizes and colors.", 400);
+  }
+  const data = await callShop("get_product", { catalog: {
+    id: productId, context: CONTEXT,
+    ...(selected.length ? { selected } : {}),
+  } });
+  const raw = object(data.product);
+  if (raw.id !== productId) throw new ShopError("This product is no longer available. Refresh the gear list.", 404);
+  const variants = array(raw.variants).map((v) => normalizeVariant(v, raw)).filter((v): v is ShopVariant => Boolean(v));
+  const matches = variants.filter((variant) => selected.every((request) => variant.selectedOptions.some((actual) => actual.name === request.name && actual.label === request.label)));
+  const exact = matches.find((variant) => variant.available === true) || matches[0];
+  if (!exact) throw new ShopError("That size and color combination is not available. Choose another option.", 409);
+  const product = normalizeProduct(raw, input.category || "shell", exact.id);
+  if (!product) throw new ShopError("Live product options could not be verified. Please try again.");
+  return {
+    status: "live", source: "Shop MCP", sourceUrl: "https://shop.dev",
+    product, products: [product], messages: messages(data), checkedAt: product.checkedAt,
+  };
+}
+
 export async function searchGear(input: ShopSearchInput = {}): Promise<ShopSearchResult> {
   const checkedAt = new Date().toISOString();
   const categories: GearCategory[] = input.query ? [input.category || inferGearCategory(input.query)] : input.category ? [input.category] : ["shell", "daypack", "bottle"];
@@ -254,6 +286,25 @@ export type CheckoutResult = {
   total: number; totalAmount: number; currency: string;
   items: DemoOrderItem[]; links: CheckoutLink[]; message: string; source: "Shop MCP";
 };
+
+/** Next's internal bind address can differ from the browser-facing Host. */
+export function assertCheckoutOrigin(request: Request): void {
+  const reject = () => { throw new ShopError("Use checkout from the OUTSIDE app.", 403); };
+  if (request.headers.get("sec-fetch-site") === "cross-site") reject();
+  const origin = request.headers.get("origin");
+  if (!origin) return; // Non-browser clients do not send Origin.
+  try {
+    const internal = new URL(request.url);
+    const host = request.headers.get("host") || internal.host;
+    const protocol = (request.headers.get("x-forwarded-proto") || internal.protocol.replace(":", "")).split(",")[0].trim();
+    if (!host || !["http", "https"].includes(protocol)) reject();
+    const expected = new URL(`${protocol}://${host}`);
+    if (expected.username || expected.password || expected.pathname !== "/" || expected.search || expected.hash || origin !== expected.origin) reject();
+  } catch (error) {
+    if (error instanceof ShopError) throw error;
+    reject();
+  }
+}
 
 /** Compare the refreshed receipt with the user's hard USD cap in integer cents. */
 export function assertCheckoutBudget(budget: unknown, receipt?: { totalAmount: number; currency: string }): void {

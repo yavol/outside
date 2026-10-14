@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { searchGear, ShopError, type GearCategory } from "@/lib/shop";
+import { fetchProduct, searchGear, ShopError, type GearCategory, type ShopOption } from "@/lib/shop";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -16,6 +16,19 @@ export async function GET(request: Request) {
     if (query.length > 240 || color.length > 60 || /[\x00-\x1f]/.test(query + color)) throw new ShopError("Use a shorter gear search.", 400);
     if (budget !== undefined && (!Number.isFinite(budget) || budget < 1 || budget > 10000)) throw new ShopError("Budget must be between 1 and 10000 USD.", 400);
     if (category && !["shell", "daypack", "bottle"].includes(category)) throw new ShopError("Choose shell, daypack or bottle.", 400);
+    const productId = params.get("productId");
+    if (productId !== null) {
+      const selectedValue = params.get("selected");
+      if (selectedValue && selectedValue.length > 4000) throw new ShopError("Product selection is too large.", 400);
+      let selected: ShopOption[] | undefined;
+      if (selectedValue) {
+        try { selected = JSON.parse(selectedValue) as ShopOption[]; }
+        catch { throw new ShopError("Choose valid product sizes and colors.", 400); }
+        if (!Array.isArray(selected)) throw new ShopError("Choose valid product sizes and colors.", 400);
+      }
+      const result = await fetchProduct(productId, { category: category as GearCategory | undefined, selected });
+      return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+    }
     const result = await searchGear({ query: query || undefined, budget, color: color || undefined, cheaper, category: category as GearCategory | undefined });
     return NextResponse.json(result, { status: result.status === "unavailable" ? 503 : 200, headers: { "Cache-Control": "no-store" } });
   } catch (error) {

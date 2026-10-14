@@ -25,6 +25,9 @@ test('POST protection accepts same origin and rejects cross-origin browser reque
   inputError(() => protectPost(request({ 'content-type': 'application/json', origin: 'https://attacker.example' })), 403);
   inputError(() => protectPost(request({ 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' })), 403);
   inputError(() => protectPost(request({ 'content-type': 'text/plain' })), 415);
+  assert.doesNotThrow(() => protectPost(new Request('http://0.0.0.0:3000/api/agent', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost:3000', origin: 'http://localhost:3000', 'sec-fetch-site': 'same-origin' }, body: '{}' })));
+  assert.doesNotThrow(() => protectPost(new Request('http://0.0.0.0:3000/api/agent', { method: 'POST', headers: { 'content-type': 'application/json', host: 'outside.example', origin: 'https://outside.example', 'x-forwarded-proto': 'https' }, body: '{}' })));
+  inputError(() => protectPost(new Request('http://0.0.0.0:3000/api/agent', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost:3000', origin: 'http://attacker.example', 'sec-fetch-site': 'same-origin' }, body: '{}' })), 403);
 });
 
 test('bounded JSON reader rejects oversized streams and malformed JSON', async () => {

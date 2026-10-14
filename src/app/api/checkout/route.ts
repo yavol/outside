@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { assertCheckoutBudget, prepareCheckout, ShopError, type CheckoutItem } from "@/lib/shop";
+import { assertCheckoutBudget, assertCheckoutOrigin, prepareCheckout, ShopError, type CheckoutItem } from "@/lib/shop";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {
-    const origin = request.headers.get("origin");
-    if (origin && origin !== new URL(request.url).origin) throw new ShopError("Use checkout from the OUTSIDE app.", 403);
+    assertCheckoutOrigin(request);
     if (Number(request.headers.get("content-length") || 0) > 16000) throw new ShopError("Selection is too large.", 413);
     if (!(request.headers.get("content-type") || "").includes("application/json")) throw new ShopError("Send a JSON gear selection.", 415);
     const raw = await request.text();
