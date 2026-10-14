@@ -37,12 +37,13 @@ Open [localhost:3000](http://localhost:3000). Add an AI credential to `.env.loca
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway credential for local development or an explicitly configured deployment. |
 | `VERCEL_OIDC_TOKEN` | Optional Vercel-issued deployment token; the app can use it automatically when available. Do not commit a token. |
 | `GEMINI_API_KEY` | Optional direct Gemini provider, including local development and fallback. `GOOGLE_GENERATIVE_AI_API_KEY` is accepted as an alias. |
-| `OUTSIDE_GATEWAY_MODEL` | Gateway primary model; default `google/gemini-3.8-flash`. |
-| `OUTSIDE_GATEWAY_FALLBACK_MODEL` | Gateway alternate model; default `openai/gpt-5.4-mini`. |
-| `OUTSIDE_GEMINI_MODEL` | Direct Gemini primary model; default `gemini-3.8-flash`. |
-| `OUTSIDE_GEMINI_FALLBACK_MODEL` | Direct Gemini alternate model; default `gemini-2.5-flash`. |
+| `OUTSIDE_PLANNER_MODEL` | Trip planning model; default `openai/gpt-6-luna`. |
+| `OUTSIDE_VISION_MODEL` | Camera and gear vision model; default `google/gemini-4-argon`. |
+| `OUTSIDE_PLANNER_FALLBACK_MODEL` | Planning alternate; default `google/gemini-4-argon`. |
+| `OUTSIDE_VISION_FALLBACK_MODEL` | Vision alternate; default `openai/gpt-6-luna`. |
+| `OUTSIDE_GEMINI_MODEL` | Optional direct Gemini model; default `gemini-4-argon`. |
 
-Model names can be changed to models available to your provider account. Keys stay in server environment variables. Without a working model credential, conversation uses the labeled local planner and image analysis reports that it is unavailable. Manual owned-gear selection still works.
+The current model lineup and source verification are documented in [docs/models.md](docs/models.md). Model names can be changed to models available to your provider account. Keys stay in server environment variables. Without a working model credential, conversation uses the labeled local planner and image analysis reports that it is unavailable. Manual owned-gear selection still works.
 
 Run the project checks with:
 

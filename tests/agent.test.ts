@@ -4,6 +4,21 @@ import { test } from 'node:test';
 // Node's test runner executes the TypeScript source directly.
 // @ts-ignore -- Explicit .ts extensions are required by Node's source loader.
 import { credentialStatus, InputError, inspectImage, parseAgentInput, parseVisionInput, planTrip, protectPost, readJson } from '../src/lib/agent.ts';
+// @ts-ignore -- Explicit .ts extensions are required by Node's source loader.
+import { generationSettings, roleModels } from '../src/lib/models.ts';
+
+test('current role defaults use Luna for planning and Argon for vision with reciprocal fallbacks', () => {
+  const names = ['OUTSIDE_PLANNER_MODEL', 'OUTSIDE_VISION_MODEL', 'OUTSIDE_PLANNER_FALLBACK_MODEL', 'OUTSIDE_VISION_FALLBACK_MODEL', 'OUTSIDE_GEMINI_MODEL'] as const;
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  names.forEach(name => { delete process.env[name]; });
+  try {
+    assert.deepEqual(roleModels(), { planner: { primary: 'openai/gpt-6-luna', fallback: 'google/gemini-4-argon' }, vision: { primary: 'google/gemini-4-argon', fallback: 'openai/gpt-6-luna' }, directGemini: 'gemini-4-argon' });
+    assert.deepEqual(generationSettings('openai/gpt-6-luna'), { maxOutputTokens: 4096, reasoningEffort: 'low' });
+    assert.deepEqual(generationSettings('google/gemini-4-argon'), { maxOutputTokens: 16384, reasoningEffort: 'low' });
+    process.env.OUTSIDE_PLANNER_MODEL = 'openai/gpt-6.1-sol';
+    assert.equal(roleModels().planner.primary, 'openai/gpt-6.1-sol');
+  } finally { names.forEach(name => { if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name]; }); }
+});
 
 function inputError(fn: () => unknown, status = 400) {
   assert.throws(fn, (error: unknown) => error instanceof InputError && error.status === status);

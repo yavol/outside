@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 // @ts-ignore -- Node's source test runner requires the explicit TypeScript extension.
 import { recordTrace } from "./trace.ts";
+// @ts-ignore -- Node's source test runner requires the explicit TypeScript extension.
+import { generationSettings, roleModels, type ModelRole } from "./models.ts";
 
 export type Engine = "gateway" | "gemini" | "local";
 export type DestinationId = "cowells" | "main-beach" | "sunset";
@@ -249,6 +251,7 @@ async function gatewayCompletion(system: string, user: string, model: string, im
   const key = process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN;
   if (!key) throw new Error("Gateway credentials unavailable.");
   const endpoint = "https://ai-gateway.vercel.sh/v1/chat/completions";
+  const settings = generationSettings(model);
   const request = {
     model,
     messages: [
@@ -256,8 +259,8 @@ async function gatewayCompletion(system: string, user: string, model: string, im
       { role: "user", content: image ? [{ type: "text", text: user }, { type: "image_url", image_url: { url: image } }] : user },
     ],
     response_format: { type: "json_object" },
-    max_tokens: 1_200,
-    ...(/^(?:google\/gemini-3|openai\/gpt-5)/.test(model) ? { reasoning_effort: "low" } : {}),
+    max_tokens: settings.maxOutputTokens,
+    ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
   };
   const started = Date.now();
   let received: unknown = null;
@@ -292,7 +295,7 @@ async function geminiCompletion(system: string, user: string, model: string, ima
   const request = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts }],
-    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 900, thinkingConfig: model.startsWith("gemini-2.5") ? { thinkingBudget: 0 } : { thinkingLevel: "low" } },
+    generationConfig: { responseMimeType: "application/json", maxOutputTokens: generationSettings(model).maxOutputTokens, thinkingConfig: { thinkingLevel: "low" } },
   };
   const started = Date.now();
   let received: unknown = null;
@@ -317,19 +320,20 @@ async function geminiCompletion(system: string, user: string, model: string, ima
 /** A forced failure skips the primary attempt, then performs a real alternate request. */
 async function complete(system: string, user: string, forceFallback: boolean, image?: string, operation = "trip.plan"): Promise<Completion> {
   const status = credentialStatus();
-  const gatewayPrimary = process.env.OUTSIDE_GATEWAY_MODEL || "google/gemini-3.8-flash";
-  const gatewayBackup = process.env.OUTSIDE_GATEWAY_FALLBACK_MODEL || "openai/gpt-5.4-mini";
-  const directPrimary = process.env.OUTSIDE_GEMINI_MODEL || "gemini-3.8-flash";
-  const directBackup = process.env.OUTSIDE_GEMINI_FALLBACK_MODEL || "gemini-2.5-flash";
+  const configuration = roleModels();
+  const role: ModelRole = operation.startsWith("vision.") ? "vision" : "planner";
+  const gatewayPrimary = configuration[role].primary;
+  const gatewayBackup = configuration[role].fallback;
+  const directPrimary = configuration.directGemini;
   const attempts: ((fallback: boolean) => Promise<Completion>)[] = [];
   if (forceFallback) recordTrace({ provider: status.gateway ? "gateway" : status.gemini ? "gemini" : "local", model: status.gateway ? gatewayPrimary : status.gemini ? directPrimary : "unavailable", operation: "routing.skip-primary", status: "local", request: { forceFallback: true }, response: { skipped: true, note: "Primary deliberately skipped. No API call was made for this event." }, durationMs: 0, fallback: true });
   if (status.gateway) {
     if (!forceFallback) attempts.push(fallback => gatewayCompletion(system, user, gatewayPrimary, image, operation, fallback));
-    attempts.push(fallback => gatewayCompletion(system, user, gatewayBackup, image, operation, fallback));
+    if (gatewayBackup !== gatewayPrimary) attempts.push(fallback => gatewayCompletion(system, user, gatewayBackup, image, operation, fallback));
   }
-  if (status.gemini) {
-    if (!forceFallback || status.gateway) attempts.push(fallback => geminiCompletion(system, user, directPrimary, image, operation, fallback));
-    attempts.push(fallback => geminiCompletion(system, user, directBackup, image, operation, fallback));
+  if (status.gemini && (!forceFallback || `google/${directPrimary}` !== gatewayPrimary)) {
+    // A single direct provider attempt; never repeat an identical direct model as its own backup.
+    attempts.push(fallback => geminiCompletion(system, user, directPrimary, image, operation, fallback));
   }
   let failed = forceFallback || (!status.gateway && status.gemini);
   for (const attempt of attempts.slice(0, 3)) {
@@ -530,7 +534,7 @@ export async function inspectImage(input: VisionInput): Promise<VisionResult> {
   try {
     const image = await imageDataUri(input.image);
     // Only public camera observations are cached; personal gear photos are not retained.
-    const cacheKey = input.kind === "conditions" && !input.image.startsWith("data:") ? createHash("sha256").update(image).digest("hex") : undefined;
+    const cacheKey = input.kind === "conditions" && !input.image.startsWith("data:") ? createHash("sha256").update(`${JSON.stringify(roleModels())}:${image}`).digest("hex") : undefined;
     const cached = cacheKey && !input.forceFallback ? observationCache.get(cacheKey) : undefined;
     if (cached && cached.expiresAt > Date.now()) {
       const result = { ...cached.result, latencyMs: Date.now() - started, cached: true };

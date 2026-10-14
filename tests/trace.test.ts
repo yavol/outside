@@ -8,7 +8,7 @@ import { recordTrace, sanitizeTraceValue, withTrace } from '../src/lib/trace.ts'
 import { inspectImage, parseAgentInput, parseVisionInput, planTrip } from '../src/lib/agent.ts';
 
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=';
-const PRIVATE_ENV = ['AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'OUTSIDE_GATEWAY_MODEL', 'OUTSIDE_GATEWAY_FALLBACK_MODEL', 'OUTSIDE_GEMINI_MODEL', 'OUTSIDE_GEMINI_FALLBACK_MODEL'] as const;
+const PRIVATE_ENV = ['AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'OUTSIDE_PLANNER_MODEL', 'OUTSIDE_PLANNER_FALLBACK_MODEL', 'OUTSIDE_VISION_MODEL', 'OUTSIDE_VISION_FALLBACK_MODEL', 'OUTSIDE_GEMINI_MODEL'] as const;
 
 test('trace scopes keep concurrent callers separate and discard events outside a request', async () => {
   recordTrace({ provider: 'local', model: 'outside-scope', operation: 'test', status: 'local', request: {}, response: {}, durationMs: 0 });
@@ -71,6 +71,8 @@ test('provider execution traces include real attempts, forced skips, image redac
       globalThis.fetch = async (_url, init) => {
         count++;
         const request = JSON.parse(String(init?.body));
+        assert.equal(request.reasoning_effort, 'low');
+        assert.equal(request.max_tokens, count === 1 ? 4096 : 16384);
         if (count === 1) return Response.json({ error: { message: 'Upstream failed trace-private-gateway-key' } }, { status: 503 });
         return Response.json({ model: request.model, choices: [{ message: { content: JSON.stringify(answer) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
       };
@@ -78,7 +80,7 @@ test('provider execution traces include real attempts, forced skips, image redac
       assert.equal(result.engine, 'gateway');
       assert.equal(count, 2);
       assert.deepEqual(trace.map(entry => entry.status), ['error', 'success']);
-      assert.deepEqual(trace.map(entry => entry.model), ['google/gemini-3.8-flash', 'openai/gpt-5.4-mini']);
+      assert.deepEqual(trace.map(entry => entry.model), ['openai/gpt-6-luna', 'google/gemini-4-argon']);
       assert.equal(trace[0].fallback, false);
       assert.equal(trace[1].fallback, true);
       assert.match(JSON.stringify(trace[0].request), /You are OUTSIDE/);
@@ -93,7 +95,7 @@ test('provider execution traces include real attempts, forced skips, image redac
         return Response.json({ model: request.model, choices: [{ message: { content: JSON.stringify(answer) } }] });
       };
       const { trace } = await withTrace(() => planTrip(parseAgentInput({ message: 'Compare beaches', destinationId: 'cowells', budget: 120, forceFallback: true })));
-      assert.deepEqual(called, ['openai/gpt-5.4-mini']);
+      assert.deepEqual(called, ['google/gemini-4-argon']);
       assert.equal(trace[0].status, 'local');
       assert.equal(trace[0].operation, 'routing.skip-primary');
       assert.match(JSON.stringify(trace[0].response), /No API call was made/);
@@ -102,7 +104,7 @@ test('provider execution traces include real attempts, forced skips, image redac
     await t.test('direct Gemini gear tracing redacts inline image bytes and preserves its response', async () => {
       delete process.env.AI_GATEWAY_API_KEY;
       process.env.GEMINI_API_KEY = 'trace-private-google-key';
-      globalThis.fetch = async () => Response.json({ modelVersion: 'gemini-3.8-flash', candidates: [{ content: { parts: [{ text: JSON.stringify({ description: 'No supported gear is visible.', category: null, confidence: 0 }) }] } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 } });
+      globalThis.fetch = async () => Response.json({ modelVersion: 'gemini-4-argon', candidates: [{ content: { parts: [{ text: JSON.stringify({ description: 'No supported gear is visible.', category: null, confidence: 0 }) }] } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 } });
       const { trace } = await withTrace(() => inspectImage(parseVisionInput({ image: `data:image/png;base64,${PNG_BASE64}`, kind: 'gear' })));
       assert.equal(trace.length, 1);
       assert.equal(trace[0].operation, 'vision.gear');
@@ -110,6 +112,30 @@ test('provider execution traces include real attempts, forced skips, image redac
       assert.match(JSON.stringify(trace[0].request), /image\/png image: 68 bytes/);
       assert.doesNotMatch(JSON.stringify(trace), /iVBORw0KGgo|trace-private-google-key/);
       assert.match(JSON.stringify(trace[0].response), /No supported gear/);
+    });
+    await t.test('a failed direct Gemini call is attempted once and becomes an honest local result', async () => {
+      let count = 0;
+      globalThis.fetch = async () => { count++; return Response.json({ error: { message: 'Service unavailable' } }, { status: 503 }); };
+      const { result, trace } = await withTrace(() => inspectImage(parseVisionInput({ image: `data:image/png;base64,${PNG_BASE64}`, kind: 'gear' })));
+      assert.equal(count, 1);
+      assert.equal(result.engine, 'local');
+      assert.deepEqual(trace.map(entry => entry.status), ['error', 'local']);
+      assert.equal(trace[0].model, 'gemini-4-argon');
+    });
+    await t.test('vision forced fallback uses Luna instead of repeating Argon', async () => {
+      delete process.env.GEMINI_API_KEY;
+      process.env.AI_GATEWAY_API_KEY = 'trace-private-gateway-key';
+      const called: string[] = [];
+      globalThis.fetch = async (_url, init) => {
+        const request = JSON.parse(String(init?.body)); called.push(request.model);
+        return Response.json({ model: request.model, choices: [{ message: { content: JSON.stringify({ description: 'No supported gear is visible.', category: null, confidence: 0 }) } }] });
+      };
+      const { trace } = await withTrace(() => inspectImage(parseVisionInput({ image: `data:image/png;base64,${PNG_BASE64}`, kind: 'gear', forceFallback: true })));
+      assert.deepEqual(called, ['openai/gpt-6-luna']);
+      assert.equal(trace[0].model, 'google/gemini-4-argon');
+      assert.equal(trace[0].status, 'local');
+      assert.equal(trace[1].model, 'openai/gpt-6-luna');
+      assert.equal(trace[1].status, 'success');
     });
     await t.test('repeated public-frame analysis records a cache hit without a second model call', async () => {
       delete process.env.GEMINI_API_KEY;
@@ -124,6 +150,7 @@ test('provider execution traces include real attempts, forced skips, image redac
       const input = parseVisionInput({ image: 'https://cmgp-coastcam.s3-us-west-2.amazonaws.com/cameras/dreaminn/latest/c2_snap.jpg', kind: 'conditions' });
       const { trace } = await withTrace(async () => { await inspectImage(input); await inspectImage(input); });
       assert.equal(modelCalls, 1);
+      assert.equal(trace[0].model, 'google/gemini-4-argon');
       assert.deepEqual(trace.map(entry => entry.status), ['success', 'cached']);
       assert.ok(trace.every(entry => entry.operation === 'vision.conditions'));
     });
