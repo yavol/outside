@@ -134,7 +134,7 @@ export default function DebugDrawer({ open, onClose, calls, onClear }: Props) {
               <section className="trace-payload"><header><span><ArrowUpRight size={14} /> Request</span><button onClick={() => void copy(selected.request, 'request')} aria-label="Copy request JSON">{copied === 'request' ? <Check size={13} /> : <Copy size={13} />}{copied === 'request' ? 'Copied' : 'Copy'}</button></header><pre tabIndex={0} aria-label="Request JSON">{json(selected.request)}</pre></section>
               <section className="trace-payload trace-response"><header><span>{selected.status === 'error' ? <CircleAlert size={14} /> : <CheckCircle2 size={14} />} Response</span><button onClick={() => void copy(selected.response, 'response')} aria-label="Copy response JSON">{copied === 'response' ? <Check size={13} /> : <Copy size={13} />}{copied === 'response' ? 'Copied' : 'Copy'}</button></header><pre tabIndex={0} aria-label="Response JSON">{json(selected.response)}</pre></section>
             </div>
-            <p className="trace-redaction"><Braces size={12} /> Credentials and image payloads are omitted from the log.</p>
+            <p className="trace-redaction"><Braces size={12} /> Credentials, image bytes, and audio bytes are omitted from the log.</p>
           </> : <div className="trace-empty"><div className="trace-empty-orbit"><span /><span /><span /><Activity size={30} strokeWidth={1.3} /></div><span className="trace-eyebrow">REQUEST LOG</span><h3>See each request.</h3><p>Make a plan or inspect a camera<br />to see calls here.</p><div><span><ArrowUpRight size={13} /> Request</span><span><Layers3 size={13} /> Model</span><span><CheckCircle2 size={13} /> Response</span></div></div>}
         </main>
       </div>

@@ -77,7 +77,7 @@ export function sanitizeTraceValue(value: unknown): unknown {
       const result: Record<string, unknown> = {};
       for (const [key, raw] of Object.entries(record).slice(0, 128)) {
         if (PRIVATE_KEY.test(key)) { result[key] = '[REDACTED]'; continue; }
-        if (key === 'reasoning_content' || (record.thought === true && key === 'text')) { result[key] = '[provider reasoning omitted]'; continue; }
+        if (key === 'reasoning_content' || key === 'reasoning_details' || (record.thought === true && key === 'text')) { result[key] = '[provider reasoning omitted]'; continue; }
         if ((key === 'audio' || key === 'data' && mime.startsWith('audio/') || /^(?:audio_base64|audioBase64)$/i.test(key)) && typeof raw === 'string') {
           result[key] = audioPlaceholder(mime.startsWith('audio/') ? mime : 'audio/unknown', raw);
           continue;

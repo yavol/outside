@@ -54,9 +54,10 @@ test('trace sanitization removes credentials and image bytes but preserves share
       inlineData: { mimeType: 'image/png', data: PNG_BASE64 },
       response: { usage }, usage,
       parts: [{ thought: true, text: 'private provider reasoning' }, { text: 'Visible answer' }],
+      reasoning_details: [{ type: 'reasoning.encrypted', data: 'opaque-private-reasoning' }],
     }) as Record<string, unknown>;
     const serialized = JSON.stringify(safe);
-    assert.doesNotMatch(serialized, /trace-test-secret-value|another-secret-value|other-value|private provider reasoning|iVBORw0KGgo/);
+    assert.doesNotMatch(serialized, /trace-test-secret-value|another-secret-value|other-value|private provider reasoning|opaque-private-reasoning|iVBORw0KGgo/);
     assert.match(serialized, /image\/png image: 68 bytes/);
     assert.deepEqual(safe.usage, usage);
     assert.deepEqual((safe.response as { usage: unknown }).usage, usage);
