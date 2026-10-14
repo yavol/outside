@@ -1,0 +1,274 @@
+import assert from "node:assert/strict";
+import { afterEach, mock, test } from "node:test";
+
+// A URL keeps Node's native TypeScript extension without requiring the app's
+// bundler-oriented tsconfig to enable allowImportingTsExtensions.
+const shopModule = new URL("../src/lib/shop.ts", import.meta.url);
+const { assertCheckoutBudget, searchGear, prepareCheckout, ShopError } = await import(shopModule.href) as typeof import("../src/lib/shop");
+
+const PRODUCT_ID = "gid://shopify/p/test-shell";
+const VARIANT_ID = "gid://shopify/ProductVariant/123";
+
+function variant(overrides: Record<string, unknown> = {}) {
+  return {
+    id: VARIANT_ID,
+    title: "Test shell · Blue / Medium",
+    price: { amount: 12999, currency: "USD" },
+    availability: { available: true },
+    url: "https://merchant.example/products/shell?variant=123&source=shop",
+    checkout_url: "https://merchant.example/cart/123:1?source=shop",
+    options: [{ name: "Color", label: "Blue" }, { name: "Size", label: "Medium" }],
+    media: [{ type: "image", url: "https://cdn.shopify.com/test-shell.png" }],
+    seller: { name: "Test Merchant", domain: "test-merchant.myshopify.com" },
+    ...overrides,
+  };
+}
+
+function product(overrides: Record<string, unknown> = {}) {
+  return {
+    id: PRODUCT_ID,
+    title: "Test shell",
+    description: { plain: "<p>A shell &amp; hood.</p>" },
+    options: [{ name: "Color", values: [{ label: "Blue", available: true }] }],
+    variants: [variant()],
+    ...overrides,
+  };
+}
+
+type RpcRequest = {
+  jsonrpc: string;
+  method: string;
+  params: {
+    name: string;
+    arguments: { catalog: Record<string, unknown> };
+    _meta: Record<string, unknown>;
+  };
+};
+
+function installCatalog(products = [product()]) {
+  const calls: { url: string; init: RequestInit; rpc: RpcRequest }[] = [];
+  mock.method(globalThis, "fetch", async (url: string | URL | Request, init: RequestInit) => {
+    calls.push({ url: String(url), init, rpc: JSON.parse(String(init.body)) as RpcRequest });
+    return Response.json({ jsonrpc: "2.0", result: { structuredContent: { products, messages: [] }, isError: false } });
+  });
+  return calls;
+}
+
+afterEach(() => mock.restoreAll());
+
+test("USD budgets become minor units and exact returned options/prices are preserved", async () => {
+  const calls = installCatalog();
+  const result = await searchGear({ category: "shell", color: "Blue", budget: 150.25 });
+  const catalog = calls[0].rpc.params.arguments.catalog;
+  assert.deepEqual(catalog.context, { address_country: "US", currency: "USD" });
+  assert.deepEqual(catalog.filters, {
+    available: true, ships_to: { country: "US" },
+    price: { max: 15025 }, attributes: [{ name: "Color", values: ["Blue"] }],
+  });
+  assert.equal(result.status, "live");
+  assert.equal(result.products[0].price, 129.99);
+  assert.equal(result.products[0].priceAmount, 12999);
+  assert.equal(result.products[0].currency, "USD");
+  assert.equal(result.products[0].description, "A shell & hood.");
+  assert.equal(result.products[0].variantId, VARIANT_ID);
+  assert.deepEqual(result.products[0].selectedOptions, [{ name: "Color", label: "Blue" }, { name: "Size", label: "Medium" }]);
+});
+
+test("a hard USD budget excludes offers over budget and unconverted foreign currencies", async () => {
+  installCatalog([
+    product({ id: "gid://shopify/p/within", variants: [variant({ price: { amount: 4999, currency: "USD" } })] }),
+    product({ id: "gid://shopify/p/over", variants: [variant({ price: { amount: 5001, currency: "USD" } })] }),
+    product({ id: "gid://shopify/p/foreign", variants: [variant({ price: { amount: 1000, currency: "CAD" } })] }),
+  ]);
+  const result = await searchGear({ category: "shell", budget: 50 });
+  assert.deepEqual(result.products.map((p) => p.productId), ["gid://shopify/p/within"]);
+});
+
+test("cheaper alternatives request the low tier and sort actual returned prices", async () => {
+  const calls = installCatalog([9000, 2500, 4999].map((amount) => product({
+    id: `gid://shopify/p/price${amount}`, variants: [variant({ price: { amount, currency: "USD" } })],
+  })));
+  const result = await searchGear({ category: "shell", cheaper: true });
+  assert.deepEqual(result.products.map((p) => p.price), [25, 49.99, 90]);
+  assert.deepEqual((calls[0].rpc.params.arguments.catalog.filters as Record<string, unknown>).price_tier, ["low"]);
+});
+
+test("search requests stay on the fixed MCP host and never cache merchant results", async () => {
+  const calls = installCatalog();
+  await searchGear({ query: "https://untrusted.example gear" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://mcp.shop.com");
+  assert.equal(calls[0].init.redirect, "error");
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].rpc.method, "tools/call");
+  assert.equal(calls[0].rpc.params.name, "search_catalog");
+  const headers = new Headers(calls[0].init.headers);
+  assert.equal(headers.get("MCP-Protocol-Version"), "2026-07-28");
+  assert.equal(headers.get("Mcp-Name"), "search_catalog");
+  assert.equal(calls[0].rpc.params._meta["io.modelcontextprotocol/protocolVersion"], "2026-07-28");
+});
+
+test("one category outage preserves other live categories and labels the response partial", async () => {
+  mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    const rpc = JSON.parse(String(init.body)) as RpcRequest;
+    const query = String(rpc.params.arguments.catalog.query);
+    if (query.includes("daypack")) return new Response("busy", { status: 503 });
+    return Response.json({ result: { structuredContent: { products: [product()] }, isError: false } });
+  });
+  const result = await searchGear();
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.products.map((p) => p.category), ["shell", "bottle"]);
+  assert.match(result.error || "", /HTTP 503/);
+});
+
+test("rate limiting produces an honest unavailable state with no fabricated inventory", async () => {
+  mock.method(globalThis, "fetch", async () => new Response("busy", { status: 429 }));
+  const result = await searchGear({ category: "shell" });
+  assert.equal(result.status, "unavailable");
+  assert.deepEqual(result.products, []);
+  assert.match(result.error || "", /Shop is busy/);
+});
+
+test("oversized upstream responses are rejected before decoding", async () => {
+  mock.method(globalThis, "fetch", async () => new Response("{}", { headers: { "content-length": "2000001" } }));
+  const result = await searchGear({ category: "shell" });
+  assert.equal(result.status, "unavailable");
+  assert.match(result.error || "", /oversized/);
+});
+
+test("unsafe product URLs are omitted and unsafe image URLs never reach the UI", async () => {
+  installCatalog([
+    product({ id: "gid://shopify/p/unsafe", variants: [variant({ url: "javascript:alert(1)" })] }),
+    product({ id: "gid://shopify/p/safe", variants: [variant({ media: [{ type: "image", url: "http://unsafe.example/image.png" }] })] }),
+  ]);
+  const result = await searchGear({ category: "shell" });
+  assert.equal(result.products.length, 1);
+  assert.equal(result.products[0].productId, "gid://shopify/p/safe");
+  assert.equal(result.products[0].image, null);
+});
+
+test("test checkout uses current variant prices, quantity arithmetic and only read-only catalog calls", async () => {
+  const calls = installCatalog();
+  const order = await prepareCheckout([{ productId: PRODUCT_ID, variantId: VARIANT_ID, quantity: 3 }]);
+  assert.equal(order.status, "demo");
+  assert.equal(order.demo, true);
+  assert.equal(order.totalAmount, 38997);
+  assert.equal(order.total, 389.97);
+  assert.equal(order.currency, "USD");
+  assert.match(order.orderId, /^OUT-[A-F0-9]{8}$/);
+  assert.equal(order.receiptId, order.orderId);
+  assert.equal(order.items[0].quantity, 3);
+  assert.equal(order.items[0].priceAmount, 12999);
+  assert.equal(order.links[0].kind, "product");
+  assert.equal(order.links[0].url, "https://merchant.example/products/shell?variant=123&source=shop");
+  assert.match(order.message, /No payment was processed/);
+  assert.deepEqual(calls.map((call) => call.rpc.params.name), ["lookup_catalog"]);
+  assert.deepEqual(calls[0].rpc.params.arguments.catalog.ids, [VARIANT_ID]);
+  assert(calls.every((call) => call.url === "https://mcp.shop.com"));
+});
+
+test("checkout binds a selected variant to its exact product instead of trusting the request", async () => {
+  installCatalog();
+  await assert.rejects(
+    () => prepareCheckout([{ productId: "gid://shopify/p/different", variantId: VARIANT_ID, quantity: 1 }]),
+    (error: unknown) => error instanceof ShopError && error.status === 409,
+  );
+  await assert.rejects(
+    () => prepareCheckout([{ productId: PRODUCT_ID, variantId: "gid://shopify/ProductVariant/999", quantity: 1 }]),
+    (error: unknown) => error instanceof ShopError && error.status === 409,
+  );
+});
+
+test("checkout prices the exact chosen variant even when a cheaper variant appears first", async () => {
+  installCatalog([product({ variants: [
+    variant({ id: "gid://shopify/ProductVariant/111", price: { amount: 1000, currency: "USD" } }),
+    variant(),
+  ] })]);
+  const order = await prepareCheckout([{ productId: PRODUCT_ID, variantId: VARIANT_ID, quantity: 1 }]);
+  assert.equal(order.totalAmount, 12999);
+  assert.equal(order.items[0].variantId, VARIANT_ID);
+});
+
+test("checkout refuses both unavailable stock and stock with unknown availability", async () => {
+  for (const availability of [{ available: false }, {}]) {
+    mock.restoreAll();
+    installCatalog([product({ variants: [variant({ availability })] })]);
+    await assert.rejects(
+      () => prepareCheckout([{ productId: PRODUCT_ID, variantId: VARIANT_ID, quantity: 1 }]),
+      (error: unknown) => error instanceof ShopError && error.status === 409 && /stock/.test(error.message),
+    );
+  }
+});
+
+test("checkout refuses to sum different currencies into a misleading total", async () => {
+  const secondId = "gid://shopify/p/foreign";
+  const secondVariant = "gid://shopify/ProductVariant/456";
+  installCatalog([product(), product({ id: secondId, variants: [variant({
+    id: secondVariant, price: { amount: 12999, currency: "CAD" },
+  })] })]);
+  await assert.rejects(
+    () => prepareCheckout([
+      { productId: PRODUCT_ID, variantId: VARIANT_ID, quantity: 1 },
+      { productId: secondId, variantId: secondVariant, quantity: 1 },
+    ]),
+    (error: unknown) => error instanceof ShopError && error.status === 409 && /same currency/.test(error.message),
+  );
+});
+
+test("checkout budgets reject malformed, nonfinite and out-of-range values", () => {
+  for (const budget of [null, "100", NaN, Infinity, -Infinity, 0, 9.99, 5000.01]) {
+    assert.throws(() => assertCheckoutBudget(budget), (error: unknown) => error instanceof ShopError && error.status === 400);
+  }
+  for (const budget of [undefined, 10, 100.1, 5000]) assert.doesNotThrow(() => assertCheckoutBudget(budget));
+});
+
+test("refreshed checkout totals enforce the USD cap precisely at the cent boundary", async () => {
+  assert.doesNotThrow(() => assertCheckoutBudget(100.1, { totalAmount: 10010, currency: "USD" }));
+  assert.throws(
+    () => assertCheckoutBudget(100.1, { totalAmount: 10011, currency: "USD" }),
+    (error: unknown) => error instanceof ShopError && error.status === 409 && /over budget/.test(error.message),
+  );
+  assert.throws(
+    () => assertCheckoutBudget(100, { totalAmount: 9000, currency: "CAD" }),
+    (error: unknown) => error instanceof ShopError && error.status === 409 && /USD budget/.test(error.message),
+  );
+  // The cap applies to the current catalog price, including quantity, rather
+  // than any price last seen in the browser.
+  installCatalog();
+  const refreshed = await prepareCheckout([{ productId: PRODUCT_ID, variantId: VARIANT_ID, quantity: 2 }]);
+  assert.throws(
+    () => assertCheckoutBudget(200, refreshed),
+    (error: unknown) => error instanceof ShopError && error.status === 409,
+  );
+  assert.doesNotThrow(() => assertCheckoutBudget(259.98, refreshed));
+});
+
+test("a full-kit budget reserves category caps whose sum fits the entire kit", async () => {
+  const caps: number[] = [];
+  mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    const rpc = JSON.parse(String(init.body)) as RpcRequest;
+    const filters = rpc.params.arguments.catalog.filters as { price: { max: number }; price_tier: string[] };
+    caps.push(filters.price.max);
+    assert.deepEqual(filters.price_tier, ["low"]);
+    return Response.json({ result: { structuredContent: { products: [product({
+      variants: [variant({ price: { amount: filters.price.max, currency: "USD" } })],
+    })] }, isError: false } });
+  });
+  const result = await searchGear({ budget: 120.01 });
+  assert.deepEqual(caps, [6000, 3600, 2401]);
+  assert.equal(caps.reduce((sum, cap) => sum + cap, 0), 12001);
+  assert.equal(result.products.length, 3);
+  assert.deepEqual(result.products.map((p) => p.category), ["shell", "daypack", "bottle"]);
+  assert.equal(result.products.reduce((sum, p) => sum + p.priceAmount, 0), 12001);
+});
+
+test("a single category or search keeps the full budget without forcing the low tier", async () => {
+  const calls = installCatalog();
+  await searchGear({ category: "shell", budget: 150 });
+  await searchGear({ query: "rain jacket", budget: 150 });
+  for (const { rpc } of calls) {
+    const filters = rpc.params.arguments.catalog.filters as Record<string, unknown>;
+    assert.deepEqual(filters.price, { max: 15000 });
+    assert.equal(filters.price_tier, undefined);
+  }
+});
